@@ -226,18 +226,7 @@ if (!function_exists('getKeys')) {
 if (!function_exists('updateDeposit')) {
     function updateDeposit($amount)
     {
-        $url = endpoint('update-deposit');
-
-        // Get the current HTTP_HOST from the request
-        $httpHost = domain();
-
-        $response = Http::withHeaders([
-            'X-DOMAIN' => $httpHost, // Set X-DOMAIN header with the current HTTP_HOST value
-            'X-AMOUNT' => $amount,
-        ])->get($url);
-
-        // Cache the response body (JSON data) instead of the entire response object
-
+        // Intentionally left blank — data stays on your server.
         return true;
     }
 }
@@ -304,130 +293,75 @@ if (!function_exists('consolidateSecurity')) {
 
 // initiate deposit
 if (!function_exists('initiateDeposit')) {
-    // function initiateDeposit($amount, $currency, $processor)
-    // {
-    //     $public_key = getKeys();
-    //     $base_currency  = strtolower(site('currency'));
-    //     $converted_amount = convertFiatToCrypto($base_currency, $currency, $amount);
-
-    //     if ($processor == 'nowpayment') {
-    //         $url = 'deposits/nowpayment';
-    //         $url = endpoint($url);
-
-    //         $data = [
-    //             'api_key' => $public_key,
-    //             'amount' => $amount,
-    //             'base_currency' => $base_currency,
-    //             'currency' => $currency,
-    //             'callback' => route('payment-callback'),
-    //             'converted_amount' => $converted_amount,
-    //         ];
-    //     } elseif ($processor == 'coinpayment') {
-    //         $url = 'deposits/coinpayment';
-    //         $url = endpoint($url);
-
-    //         $data = [
-    //             'public_key' => env('COINPAYMENT_PUBLIC_KEY'),
-    //             'private_key' => env('COINPAYMENT_PRIVATE_KEY'),
-    //             'amount' => $amount,
-    //             'base_currency' => $base_currency,
-    //             'currency' => $currency,
-    //             'callback' => route('payment-callback-coinpayment'), //chnage for coinpayment
-    //             'converted_amount' => $converted_amount,
-    //             'email' => site('email')
-    //         ];
-    //     } else {
-    //         return false;
-    //     }
-
-    //     $response = Http::post($url, $data);
-
-    //     // dd($response->body());
-
-    //     if (!$response->successful()) {
-    //         return false;
-    //     }
-
-    //     $real_order = $response->body();
-
-    //     return $real_order;
-    // }
-
     function initiateDeposit($amount, $currency, $processor, $wallet_address = null)
     {
-
-
-        $public_key = getKeys();
-        $base_currency  = strtolower(site('currency'));
+        $base_currency = strtolower(site('currency'));
         $converted_amount = convertFiatToCrypto($base_currency, $currency, $amount);
 
-
-
-
-
         if ($processor == 'nowpayment') {
-            $url = 'deposits/nowpayment';
-            $url = endpoint($url);
+            $api_key = env('NP_API_KEY');
+            $response = Http::withHeaders([
+                'x-api-key' => $api_key,
+                'Content-Type' => 'application/json',
+            ])->post('https://api.nowpayments.io/v1/payment', [
+                'price_amount' => $amount,
+                'price_currency' => $base_currency,
+                'pay_currency' => $currency,
+                'ipn_callback_url' => route('payment-callback'),
+                'order_id' => uniqid('dep-'),
+            ]);
 
-            $data = [
-                'api_key' => $public_key,
-                'amount' => $amount,
-                'base_currency' => $base_currency,
-                'currency' => $currency,
-                'callback' => route('payment-callback'),
-                'converted_amount' => $converted_amount,
-                // 'wallet_address' => $wallet_address
-            ];
+            if (!$response->successful()) {
+                Log::error('NowPayments deposit error: ' . $response->body());
+                return false;
+            }
+
+            return $response->body();
         } elseif ($processor == 'coinpayment') {
-            $url = 'deposits/coinpayment';
-            $url = endpoint($url);
+            $public_key = env('COINPAYMENT_PUBLIC_KEY');
+            $private_key = env('COINPAYMENT_PRIVATE_KEY');
 
-
-            $data = [
-                'public_key' => env('COINPAYMENT_PUBLIC_KEY'),
-                'private_key' => env('COINPAYMENT_PRIVATE_KEY'),
-                'amount' => $amount,
-                'base_currency' => $base_currency,
-                'currency' => $currency,
-                'callback' => route('payment-callback-coinpayment'), //chnage for coinpayment
-                'converted_amount' => $converted_amount,
-                'email' => site('email'),
-                'wallet_address' => $wallet_address
+            $params = [
+                'version' => 1,
+                'cmd' => 'create_transaction',
+                'key' => $public_key,
+                'amount' => $converted_amount,
+                'currency1' => strtoupper($base_currency),
+                'currency2' => strtoupper($currency),
+                'buyer_email' => site('email'),
+                'ipn_url' => route('payment-callback-coinpayment'),
+                'format' => 'json',
             ];
+
+            if ($wallet_address) {
+                $params['address'] = $wallet_address;
+            }
+
+            $post_data = http_build_query($params);
+            $hmac = hash_hmac('sha512', $post_data, $private_key);
+
+            $response = Http::withHeaders([
+                'HMAC' => $hmac,
+                'Content-Type' => 'application/x-www-form-urlencoded',
+            ])->withBody($post_data, 'application/x-www-form-urlencoded')
+                ->post('https://www.coinpayments.net/api.php');
+
+            if (!$response->successful()) {
+                Log::error('CoinPayments deposit error: ' . $response->body());
+                return false;
+            }
+
+            return $response->body();
         } elseif ($processor == 'manual') {
-            $url = 'deposits/nowpayment';
-            $url = endpoint($url);
-
-            $data = [
-                'api_key' => $public_key,
+            return json_encode([
+                'status' => 'pending',
+                'order_id' => uniqid('manual-'),
                 'amount' => $amount,
-                'base_currency' => $base_currency,
                 'currency' => $currency,
-                'callback' => route('payment-callback'),
-                'converted_amount' => $converted_amount,
-                'wallet_address' => $wallet_address
-            ];
+            ]);
         } else {
             return false;
         }
-
-
-
-        $response = Http::post($url, $data);
-
-
-
-        // dd($response->body());
-
-        if (!$response->successful()) {
-            return false;
-        }
-
-        $real_order = $response->body();
-
-
-
-        return  $real_order;
     }
 }
 
@@ -693,24 +627,48 @@ if (!function_exists('is_required')) {
 
 //convert currency
 if (!function_exists('convertFiatToCrypto')) {
-    function convertFiatToCrypto($fiat, $crypto,  $amount)
+    function convertFiatToCrypto($fiat, $crypto, $amount)
     {
-        // fetch conversion from api
-        $url = endpoint('convert');
-        $query = [
-            'base' => $fiat,
-            'currency' => $crypto,
-            'amount' => $amount
-        ];
+        $cacheKey = "coingecko_price_{$crypto}_{$fiat}";
 
-        $response = Http::withHeader('X-DOMAIN', domain())->get($url, $query);
-        if (!$response->successful()) {
+        $price = Cache::remember($cacheKey, 300, function () use ($fiat, $crypto) {
+            $idMap = [
+                'btc' => 'bitcoin',
+                'eth' => 'ethereum',
+                'usdt' => 'tether',
+                'bnb' => 'binancecoin',
+                'usdc' => 'usd-coin',
+                'ltc' => 'litecoin',
+                'xrp' => 'ripple',
+                'trx' => 'tron',
+                'doge' => 'dogecoin',
+                'sol' => 'solana',
+            ];
+
+            $coinId = $idMap[strtolower($crypto)] ?? strtolower($crypto);
+            $vsCurrency = strtolower($fiat);
+
+            $response = Http::timeout(10)
+                ->get('https://api.coingecko.com/api/v3/simple/price', [
+                    'ids' => $coinId,
+                    'vs_currencies' => $vsCurrency,
+                ]);
+
+            if (!$response->successful()) {
+                Log::error("CoinGecko price fetch failed for {$crypto}/{$fiat}: " . $response->body());
+                return null;
+            }
+
+            $data = $response->json();
+            return $data[$coinId][$vsCurrency] ?? null;
+        });
+
+        if (!$price || $price <= 0) {
+            Log::error("convertFiatToCrypto: could not get price for {$crypto}/{$fiat}");
             return false;
         }
 
-        $data = $response->json();
-        $converted_amount = $data['converted_amount'];
-        return $converted_amount;
+        return round($amount / $price, 8);
     }
 }
 
